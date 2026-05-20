@@ -1,36 +1,25 @@
-/*
- * detector_tobe.cpp  –  v8, 2 bete + DFPlayer Mini
- *
- * Hardware:
- *   Bat STANGA  : MPU-6050 AD0=GND  → 0x68
- *   Bat DREAPTA : MPU-6050 AD0=3.3V → 0x69
- *   DFPlayer    : RX ← PD4 (pin 4) prin 1kΩ
- *                 TX → PD5 (pin 5) direct
- *                 DAC_R / DAC_L → modul jack → amplificator
- *
- * Fisiere pe SD card (folder /mp3/ sau root, 0001.mp3 etc.):
- *   1 → Snare  (toba mijloc)
- *   2 → Hi-hat (toba stanga)
- *   3 → Bass   (toba dreapta)
- */
-
 #include <Arduino.h>
 #include <Wire.h>
 #include <SoftwareSerial.h>
 #include <DFRobotDFPlayerMini.h>
+#include <LiquidCrystal_I2C.h>
+
+// ── LCD ───────────────────────────────────────────────────
+// Adresa 0x27
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // ── DFPlayer ──────────────────────────────────────────────
-// PD4 = pin 4 = TX spre DFPlayer RX (prin 1kΩ)
-// PD5 = pin 5 = RX de la DFPlayer TX
-SoftwareSerial dfSerial(5, 4);   // (RX_arduino, TX_arduino)
+SoftwareSerial dfSerial(5, 4);
 DFRobotDFPlayerMini dfPlayer;
 
-// Numere de fisiere pe SD card
-#define SND_MIJLOC   1   // snare
-#define SND_STANGA   2   // hi-hat
-#define SND_DREAPTA  3   // bass drum
+#define SND_MIJLOC   1
+#define SND_STANGA   2
+#define SND_DREAPTA  3
 
-// ── I2C senzori ───────────────────────────────────────────
+// ── Bluetooth HC-05 ───────────────────────────────────────
+SoftwareSerial btSerial(7, 6);
+
+// ── MPU-6050 ──────────────────────────────────────────────
 #define MPU_ADDR_STG  0x68
 #define MPU_ADDR_DR   0x69
 
@@ -89,50 +78,53 @@ static void mpu_read(uint8_t addr, int16_t &ax, int16_t &ay, int16_t &az) {
 static void mpu_init(uint8_t addr) {
     mpu_write_reg(addr, REG_PWR_MGMT,  0x00);
     delay(50);
-    mpu_write_reg(addr, REG_ACCEL_CFG, 0x10); // +-8g
-    mpu_write_reg(addr, REG_GYRO_CFG,  0x08); // +-500°/s
-    mpu_write_reg(addr, REG_CONFIG,    0x03); // DLPF 44Hz
+    mpu_write_reg(addr, REG_ACCEL_CFG, 0x10);
+    mpu_write_reg(addr, REG_GYRO_CFG,  0x08);
+    mpu_write_reg(addr, REG_CONFIG,    0x03);
 }
 
 static void calibrate(Bat &b) {
-    Serial.print(F("Calibrare bat "));
-    Serial.print(b.nume); Serial.println(F("... nemiscat!"));
-    int32_t sx=0,sy=0,sz=0;
-    int16_t ax,ay,az;
+    Serial.print(F("Calibrare ")); Serial.print(b.nume);
+    Serial.println(F("..."));
+    int32_t sx=0, sy=0, sz=0;
+    int16_t ax, ay, az;
     for (uint16_t i=0; i<200; i++) {
         mpu_read(b.addr, ax, ay, az);
         sx+=ax; sy+=ay; sz+=az;
         delay(5);
     }
     b.ax_off=sx/200; b.ay_off=sy/200; b.az_off=sz/200;
-    Serial.print(F("  OK ay_off=")); Serial.println(b.ay_off);
 }
 
 static void classify(Bat &b) {
     hitCount++;
-
-    const char *toba;
-    const char *simbol;
     uint8_t     sound;
+    const char* toba;
+    const char* simbol;
 
     if (b.peak_pos > abs(b.peak_neg) && b.peak_pos > AXIS_DY_ZONE) {
-        toba   = "TOBA DREAPTA";
-        simbol = " >>> ";
-        sound  = SND_DREAPTA;
+        toba="DREAPTA"; simbol=" >>> "; sound=SND_DREAPTA;
     } else if (abs(b.peak_neg) > b.peak_pos && abs(b.peak_neg) > AXIS_DY_ZONE) {
-        toba   = "TOBA STANGA";
-        simbol = " <<< ";
-        sound  = SND_STANGA;
+        toba="STANGA";  simbol=" <<< "; sound=SND_STANGA;
     } else {
-        toba   = "TOBA MIJLOC";
-        simbol = " [*] ";
-        sound  = SND_MIJLOC;
+        toba="MIJLOC";  simbol=" [*] "; sound=SND_MIJLOC;
     }
 
-    // ── Reda sunetul ──────────────────────────────────────
     dfPlayer.play(sound);
 
-    // ── Serial debug ──────────────────────────────────────
+    // Bluetooth
+    btSerial.print(b.nume);
+    btSerial.print(',');
+    btSerial.println(toba);
+
+    // LCD linia 2: ultima lovitura
+    lcd.setCursor(0, 1);
+    lcd.print(b.nume);
+    lcd.print(F(": "));
+    lcd.print(toba);
+    lcd.print(F("        ")); // sterge restul liniei
+
+    // Serial debug
     Serial.print(F("#")); Serial.print(hitCount);
     Serial.print(F(" [")); Serial.print(b.nume); Serial.print(F("]"));
     Serial.print(simbol); Serial.println(toba);
@@ -194,38 +186,61 @@ void setup() {
     Serial.begin(57600);
     pinMode(USER_LED, OUTPUT);
 
-    // ── DFPlayer ──────────────────────────────────────────
-    dfSerial.begin(9600);
-    delay(200);
-if (!dfPlayer.begin(dfSerial, false)) {
-        Serial.println(F("DFPlayer ERR! Verifica SD si conexiunile."));
-    } else {
-        Serial.println(F("DFPlayer OK"));
-        dfPlayer.volume(25);   // volum 0-30
-        dfPlayer.EQ(DFPLAYER_EQ_NORMAL);
-    }
-Serial.print(F("DFPlayer state: "));
-Serial.println(dfPlayer.readState());
-Serial.print(F("Fisiere pe card: "));
-Serial.println(dfPlayer.readFileCounts());
-    // ── MPU-6050 ──────────────────────────────────────────
+    // ── I2C + LCD ─────────────────────────────────────────
     Wire.begin();
     Wire.setClock(400000);
+
+    lcd.init();
+    lcd.backlight();
+
+    // Linia 0: stilul curent
+    lcd.setCursor(0, 0);
+    lcd.print(F("  Stil: ROCK    "));
+
+    // Linia 1: ultima toba lovita (gol initial)
+    lcd.setCursor(0, 1);
+    lcd.print(F("                "));
+
+    // ── DFPlayer ──────────────────────────────────────────
+    dfSerial.begin(9600);
+    delay(500);
+    if (!dfPlayer.begin(dfSerial, false)) {
+        Serial.println(F("DFPlayer ERR!"));
+        lcd.setCursor(0, 1);
+        lcd.print(F("DF ERR!         "));
+    } else {
+        dfPlayer.volume(25);
+        Serial.println(F("DFPlayer OK"));
+    }
+
+    // ── Bluetooth ─────────────────────────────────────────
+    btSerial.begin(9600);
+    btSerial.println(F("AEROBEAT_READY"));
+
+    // ── MPU-6050 ──────────────────────────────────────────
     mpu_init(MPU_ADDR_STG);
     mpu_init(MPU_ADDR_DR);
     delay(100);
 
+    // Calibrare cu mesaj pe LCD
+    lcd.setCursor(0, 1);
+    lcd.print(F("Calibrare...    "));
     calibrate(bat1);
     calibrate(bat2);
 
-    Serial.println(F("\r\n=============================="));
-    Serial.println(F("  AERO BEAT v8  –  2 bete"));
-    Serial.println(F("=============================="));
+    lcd.setCursor(0, 1);
+    lcd.print(F("Ready!          "));
+
+    Serial.println(F("AERO BEAT v11 ready"));
 
     for (int i=0; i<3; i++) {
         digitalWrite(USER_LED, HIGH); delay(80);
         digitalWrite(USER_LED, LOW);  delay(80);
     }
+
+    delay(1000);
+    lcd.setCursor(0, 1);
+    lcd.print(F("                "));
 }
 
 void loop() {
