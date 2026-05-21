@@ -1,5 +1,5 @@
 /*
- *  v12, + DFPlayer 2 pe PD6/PD7
+ * detector_tobe.cpp  –  v12, + DFPlayer 2 pe PD6/PD7
  */
 
 #include <Arduino.h>
@@ -10,6 +10,7 @@
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
+//  1. Adaugat dfSerial2 si df2 ─
 SoftwareSerial dfSerial(5, 4);
 DFRobotDFPlayerMini dfPlayer;
 
@@ -20,7 +21,7 @@ DFRobotDFPlayerMini dfPlayer2;
 #define SND_STANGA   2
 #define SND_DREAPTA  3
 
-SoftwareSerial btSerial(3, 2);
+SoftwareSerial btSerial(2, 3);
 
 #define MPU_ADDR_STG  0x68
 #define MPU_ADDR_DR   0x69
@@ -38,11 +39,48 @@ SoftwareSerial btSerial(3, 2);
 
 #define USER_LED 13
 
-#define BTN_PIN 8  // PB0 
+#define BTN_PIN  8   // PB0 = pin 8 - pauza/resume
+#define BTN2_PIN 9   // PB1 = pin 9 - schimba stil
+
+//  LED RGB (anod comun) 
+#define LED_R 10  // PB2 - PWM
+#define LED_G 11  // PB3 - PWM
+#define LED_B 12  // PB4 - fara PWM
+
+// ROCK:  DF1 fis 1,2,3  |  DF2 fis 1,2,3
+// METAL: DF1 fis 4,5,6  |  DF2 fis 5,6,7
+enum Style { ROCK, METAL };
+static Style currentStyle = ROCK;
+
+//  Variabile LED RGB ─
+static uint8_t r_target=0, g_target=0, b_target=0;
+static uint8_t r_cur=0,    g_cur=0,    b_cur=0;
+static uint32_t ledOffMs = 0;
+
+static uint8_t stepTo(uint8_t cur, uint8_t target, uint8_t step) {
+    if (cur < target) return (target-cur <= step) ? target : cur+step;
+    if (cur > target) return (cur-target <= step) ? target : cur-step;
+    return cur;
+}
+
+static void setLedColor(uint8_t r, uint8_t g, uint8_t b) {
+    r_target=r; g_target=g; b_target=b;
+}
+
+static void updateLed() {
+    if (millis() > ledOffMs) setLedColor(0,0,0);
+    r_cur = stepTo(r_cur, r_target, 8);
+    g_cur = stepTo(g_cur, g_target, 8);
+    b_cur = stepTo(b_cur, b_target, 8);
+    // Anod comun: invert (0=aprins, 255=stins)
+    analogWrite(LED_R, 255 - r_cur);
+    analogWrite(LED_G, 255 - g_cur);
+    digitalWrite(LED_B, b_cur > 127 ? LOW : HIGH);
+}
 
 enum State { READY, DETECTING, COOLING };
 
-// pointer df in struct
+//  2. Adaugat pointer df in struct ─
 struct Bat {
     uint8_t               addr;
     const char*           nume;
@@ -56,7 +94,7 @@ struct Bat {
     uint32_t              coolingStart;
 };
 
-// bat1 foloseste dfPlayer, bat2 foloseste dfPlayer2 
+//  3. bat1 foloseste dfPlayer, bat2 foloseste dfPlayer2 
 static Bat bat1 = { MPU_ADDR_STG, "STG", &dfPlayer,  0,0,0, READY,0,0,0,0,0 };
 static Bat bat2 = { MPU_ADDR_DR,  "DR",  &dfPlayer2, 0,0,0, READY,0,0,0,0,0 };
 static uint32_t hitCount = 0;
@@ -105,16 +143,26 @@ static void classify(Bat &b) {
     const char* toba;
     const char* simbol;
 
+    // Baza sunet depinde de stil si de care DFPlayer
+    uint8_t base = (currentStyle == ROCK) ? 1 : (b.df == &dfPlayer ? 4 : 5);
+
     if (b.peak_pos > abs(b.peak_neg) && b.peak_pos > AXIS_DY_ZONE) {
-        toba="DREAPTA"; simbol=" >>> "; sound=SND_DREAPTA;
+        toba="DREAPTA"; simbol=" >>> "; sound=base+2;
     } else if (abs(b.peak_neg) > b.peak_pos && abs(b.peak_neg) > AXIS_DY_ZONE) {
-        toba="STANGA";  simbol=" <<< "; sound=SND_STANGA;
+        toba="STANGA";  simbol=" <<< "; sound=base+1;
     } else {
-        toba="MIJLOC";  simbol=" [*] "; sound=SND_MIJLOC;
+        toba="MIJLOC";  simbol=" [*] "; sound=base;
     }
 
-    // f iecare bata reda pe propriul DFPlayer
+    //  4. Fiecare bat reda pe propriul DFPlayer 
     b.df->play(sound);
+
+    //  LED RGB: culoare per toba ─
+    // STANGA=rosu, MIJLOC=galben, DREAPTA=mov
+    if (sound == base+1)      setLedColor(255, 0,   0);   // rosu
+    else if (sound == base)   setLedColor(255, 200, 0);   // galben
+    else                      setLedColor(255, 0,   255); // mov
+    ledOffMs = millis() + 600;
 
     btSerial.print(b.nume);
     btSerial.print(',');
@@ -182,6 +230,15 @@ static void process(Bat &b) {
 void setup() {
     Serial.begin(57600);
     pinMode(USER_LED, OUTPUT);
+    pinMode(BTN_PIN, INPUT);
+    pinMode(BTN2_PIN, INPUT);
+    pinMode(LED_R, OUTPUT);
+    pinMode(LED_G, OUTPUT);
+    pinMode(LED_B, OUTPUT);
+    // Stinge LED initial (anod comun: HIGH=stins)
+    digitalWrite(LED_R, HIGH);
+    digitalWrite(LED_G, HIGH);
+    digitalWrite(LED_B, HIGH);
 
     Wire.begin();
     Wire.setClock(400000);
@@ -211,7 +268,7 @@ void setup() {
     Serial.print(F("DF1 state: "));
     Serial.println(dfPlayer.readState());
 
-    // Initializare DFPlayer 2 
+    //  5. Initializare DFPlayer 2 
     dfSerial2.begin(9600);
     delay(1000);
     if (!dfPlayer2.begin(dfSerial2, false)) {
@@ -229,7 +286,7 @@ void setup() {
     Serial.print(F("DF2 state: "));
     Serial.println(dfPlayer2.readState());
 
-    //  Bluetooth 
+    //  Bluetooth ─
     btSerial.begin(9600);
     btSerial.println(F("AEROBEAT_READY"));
 
@@ -267,7 +324,7 @@ void loop() {
             delay(50);
 
             if (!paused) {
-                // Prima apasare ->PAUZA
+                // Prima apasare → PAUZA
                 paused = true;
                 dfPlayer.stop();
                 dfPlayer2.stop();
@@ -275,7 +332,7 @@ void loop() {
                 bat2.state = READY; bat2.calmN = 0;
 
                 // 0004.mp3 pe cardul SD al DF1
-                dfPlayer.loop(4);
+                dfPlayer2.loop(4);
 
                 lcd.setCursor(0, 0);
                 lcd.print(F("  ** PAUSED **  "));
@@ -283,7 +340,7 @@ void loop() {
                 lcd.print(F("Apasa pt resume "));
 
             } else {
-                // A doua apasare ->RESUME + recalibrare
+                // A doua apasare → RESUME + recalibrare
                 paused = false;
                 dfPlayer.stop();
 
@@ -301,10 +358,26 @@ void loop() {
         }
     }
 
+    // Buton stil: ROCK ↔ METAL
+    if (digitalRead(BTN2_PIN) == HIGH) {
+        delay(50);
+        if (digitalRead(BTN2_PIN) == HIGH) {
+            while (digitalRead(BTN2_PIN) == HIGH);
+            delay(50);
+            currentStyle = (currentStyle == ROCK) ? METAL : ROCK;
+            lcd.setCursor(0, 0);
+            if (currentStyle == ROCK)
+                lcd.print(F("  Stil: ROCK    "));
+            else
+                lcd.print(F("  Stil: METAL   "));
+        }
+    }
+
     if (!paused) {
         process(bat1);
         process(bat2);
     }
 
+    updateLed();
     delay(5);
 }
