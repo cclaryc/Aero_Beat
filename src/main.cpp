@@ -1,63 +1,65 @@
+/*
+ *  v12, + DFPlayer 2 pe PD6/PD7
+ */
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <SoftwareSerial.h>
 #include <DFRobotDFPlayerMini.h>
 #include <LiquidCrystal_I2C.h>
 
-// ── LCD ───────────────────────────────────────────────────
-// Adresa 0x27
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// ── DFPlayer ──────────────────────────────────────────────
 SoftwareSerial dfSerial(5, 4);
 DFRobotDFPlayerMini dfPlayer;
+
+SoftwareSerial dfSerial2(7, 6);   // RX=PD7, TX=PD6
+DFRobotDFPlayerMini dfPlayer2;
 
 #define SND_MIJLOC   1
 #define SND_STANGA   2
 #define SND_DREAPTA  3
 
-// ── Bluetooth HC-05 ───────────────────────────────────────
-SoftwareSerial btSerial(7, 6);
+SoftwareSerial btSerial(3, 2);
 
-// ── MPU-6050 ──────────────────────────────────────────────
 #define MPU_ADDR_STG  0x68
 #define MPU_ADDR_DR   0x69
-
 #define REG_PWR_MGMT  0x6B
 #define REG_ACCEL_CFG 0x1C
 #define REG_GYRO_CFG  0x1B
 #define REG_CONFIG    0x1A
 
-// ── Parametri detectie ────────────────────────────────────
 #define HIT_THRESHOLD   6000L
-#define DETECT_WINDOW   10
+#define DETECT_WINDOW   6
 #define AXIS_DY_ZONE    4000
 #define REST_THRESHOLD  1500L
-#define CALM_SAMPLES    4
-#define MAX_COOLING_MS  400UL
+#define CALM_SAMPLES    2
+#define MAX_COOLING_MS  250UL
 
 #define USER_LED 13
 
-// ── Struct bat ────────────────────────────────────────────
+#define BTN_PIN 8  // PB0 
+
 enum State { READY, DETECTING, COOLING };
 
+// pointer df in struct
 struct Bat {
-    uint8_t     addr;
-    const char* nume;
-    int16_t     ax_off, ay_off, az_off;
-    State       state;
-    uint8_t     detectN;
-    int32_t     peak_pos;
-    int32_t     peak_neg;
-    uint8_t     calmN;
-    uint32_t    coolingStart;
+    uint8_t               addr;
+    const char*           nume;
+    DFRobotDFPlayerMini*  df;
+    int16_t               ax_off, ay_off, az_off;
+    State                 state;
+    uint8_t               detectN;
+    int32_t               peak_pos;
+    int32_t               peak_neg;
+    uint8_t               calmN;
+    uint32_t              coolingStart;
 };
 
-static Bat bat1 = { MPU_ADDR_STG, "STG", 0,0,0, READY,0,0,0,0,0 };
-static Bat bat2 = { MPU_ADDR_DR,  "DR",  0,0,0, READY,0,0,0,0,0 };
+// bat1 foloseste dfPlayer, bat2 foloseste dfPlayer2 
+static Bat bat1 = { MPU_ADDR_STG, "STG", &dfPlayer,  0,0,0, READY,0,0,0,0,0 };
+static Bat bat2 = { MPU_ADDR_DR,  "DR",  &dfPlayer2, 0,0,0, READY,0,0,0,0,0 };
 static uint32_t hitCount = 0;
-
-// ─────────────────────────────────────────────────────────
 
 static void mpu_write_reg(uint8_t addr, uint8_t reg, uint8_t val) {
     Wire.beginTransmission(addr);
@@ -94,6 +96,7 @@ static void calibrate(Bat &b) {
         delay(5);
     }
     b.ax_off=sx/200; b.ay_off=sy/200; b.az_off=sz/200;
+    Serial.print(F("  OK ay_off=")); Serial.println(b.ay_off);
 }
 
 static void classify(Bat &b) {
@@ -110,27 +113,25 @@ static void classify(Bat &b) {
         toba="MIJLOC";  simbol=" [*] "; sound=SND_MIJLOC;
     }
 
-    dfPlayer.play(sound);
+    // f iecare bata reda pe propriul DFPlayer
+    b.df->play(sound);
 
-    // Bluetooth
     btSerial.print(b.nume);
     btSerial.print(',');
     btSerial.println(toba);
 
-    // LCD linia 2: ultima lovitura
     lcd.setCursor(0, 1);
     lcd.print(b.nume);
     lcd.print(F(": "));
     lcd.print(toba);
-    lcd.print(F("        ")); // sterge restul liniei
+    lcd.print(F("        "));
 
-    // Serial debug
     Serial.print(F("#")); Serial.print(hitCount);
     Serial.print(F(" [")); Serial.print(b.nume); Serial.print(F("]"));
     Serial.print(simbol); Serial.println(toba);
 
     digitalWrite(USER_LED, HIGH);
-    delay(15);
+    // delay(15);
     digitalWrite(USER_LED, LOW);
 }
 
@@ -152,7 +153,6 @@ static void process(Bat &b) {
                 b.state    = DETECTING;
             }
             break;
-
         case DETECTING:
             if (dy > b.peak_pos) b.peak_pos = dy;
             if (dy < b.peak_neg) b.peak_neg = dy;
@@ -164,7 +164,6 @@ static void process(Bat &b) {
                 b.state = COOLING;
             }
             break;
-
         case COOLING:
             if (mag < REST_THRESHOLD) {
                 b.calmN++;
@@ -180,49 +179,65 @@ static void process(Bat &b) {
     }
 }
 
-// ─────────────────────────────────────────────────────────
-
 void setup() {
     Serial.begin(57600);
     pinMode(USER_LED, OUTPUT);
 
-    // ── I2C + LCD ─────────────────────────────────────────
     Wire.begin();
     Wire.setClock(400000);
 
     lcd.init();
     lcd.backlight();
-
-    // Linia 0: stilul curent
     lcd.setCursor(0, 0);
     lcd.print(F("  Stil: ROCK    "));
-
-    // Linia 1: ultima toba lovita (gol initial)
     lcd.setCursor(0, 1);
     lcd.print(F("                "));
 
-    // ── DFPlayer ──────────────────────────────────────────
+    //  DFPlayer 1 
     dfSerial.begin(9600);
-    delay(500);
+    delay(1000);
     if (!dfPlayer.begin(dfSerial, false)) {
-        Serial.println(F("DFPlayer ERR!"));
+        Serial.println(F("DF1 ERR!"));
         lcd.setCursor(0, 1);
-        lcd.print(F("DF ERR!         "));
+        lcd.print(F("DF1 ERR!        "));
     } else {
+        Serial.println(F("DF1 OK"));
         dfPlayer.volume(25);
-        Serial.println(F("DFPlayer OK"));
+        dfPlayer.EQ(DFPLAYER_EQ_NORMAL);
+        delay(3000);
+        Serial.print(F("DF1 fisiere: "));
+        Serial.println(dfPlayer.readFileCounts());
     }
+    Serial.print(F("DF1 state: "));
+    Serial.println(dfPlayer.readState());
 
-    // ── Bluetooth ─────────────────────────────────────────
+    // Initializare DFPlayer 2 
+    dfSerial2.begin(9600);
+    delay(1000);
+    if (!dfPlayer2.begin(dfSerial2, false)) {
+        Serial.println(F("DF2 ERR!"));
+        lcd.setCursor(0, 1);
+        lcd.print(F("DF2 ERR!        "));
+    } else {
+        Serial.println(F("DF2 OK"));
+        dfPlayer2.volume(30);
+        dfPlayer2.EQ(DFPLAYER_EQ_NORMAL);
+        delay(3000);
+        Serial.print(F("DF2 fisiere: "));
+        Serial.println(dfPlayer2.readFileCounts());
+    }
+    Serial.print(F("DF2 state: "));
+    Serial.println(dfPlayer2.readState());
+
+    //  Bluetooth 
     btSerial.begin(9600);
     btSerial.println(F("AEROBEAT_READY"));
 
-    // ── MPU-6050 ──────────────────────────────────────────
+    //  MPU-6050 
     mpu_init(MPU_ADDR_STG);
     mpu_init(MPU_ADDR_DR);
     delay(100);
 
-    // Calibrare cu mesaj pe LCD
     lcd.setCursor(0, 1);
     lcd.print(F("Calibrare...    "));
     calibrate(bat1);
@@ -230,8 +245,7 @@ void setup() {
 
     lcd.setCursor(0, 1);
     lcd.print(F("Ready!          "));
-
-    Serial.println(F("AERO BEAT v11 ready"));
+    Serial.println(F("AERO BEAT v12 ready"));
 
     for (int i=0; i<3; i++) {
         digitalWrite(USER_LED, HIGH); delay(80);
@@ -243,8 +257,54 @@ void setup() {
     lcd.print(F("                "));
 }
 
+static bool paused = false;
+
 void loop() {
-    process(bat1);
-    process(bat2);
+    if (digitalRead(BTN_PIN) == HIGH) {
+        delay(50);
+        if (digitalRead(BTN_PIN) == HIGH) {
+            while (digitalRead(BTN_PIN) == HIGH);
+            delay(50);
+
+            if (!paused) {
+                // Prima apasare ->PAUZA
+                paused = true;
+                dfPlayer.stop();
+                dfPlayer2.stop();
+                bat1.state = READY; bat1.calmN = 0;
+                bat2.state = READY; bat2.calmN = 0;
+
+                // 0004.mp3 pe cardul SD al DF1
+                dfPlayer.loop(4);
+
+                lcd.setCursor(0, 0);
+                lcd.print(F("  ** PAUSED **  "));
+                lcd.setCursor(0, 1);
+                lcd.print(F("Apasa pt resume "));
+
+            } else {
+                // A doua apasare ->RESUME + recalibrare
+                paused = false;
+                dfPlayer.stop();
+
+                lcd.setCursor(0, 0);
+                lcd.print(F("  Stil: ROCK    "));
+                lcd.setCursor(0, 1);
+                lcd.print(F("Calibrare...    "));
+
+                calibrate(bat1);
+                calibrate(bat2);
+
+                lcd.setCursor(0, 1);
+                lcd.print(F("Ready!          "));
+            }
+        }
+    }
+
+    if (!paused) {
+        process(bat1);
+        process(bat2);
+    }
+
     delay(5);
 }
