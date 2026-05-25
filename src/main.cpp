@@ -10,7 +10,6 @@
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-//  1. Adaugat dfSerial2 si df2 ─
 SoftwareSerial dfSerial(5, 4);
 DFRobotDFPlayerMini dfPlayer;
 
@@ -42,17 +41,17 @@ SoftwareSerial btSerial(2, 3);
 #define BTN_PIN  8   // PB0 = pin 8 - pauza/resume
 #define BTN2_PIN 9   // PB1 = pin 9 - schimba stil
 
-//  LED RGB (anod comun) 
+//  LED RGB  ar anod comun  
 #define LED_R 10  // PB2 - PWM
 #define LED_G 11  // PB3 - PWM
 #define LED_B 12  // PB4 - fara PWM
 
 // ROCK:  DF1 fis 1,2,3  |  DF2 fis 1,2,3
 // METAL: DF1 fis 4,5,6  |  DF2 fis 5,6,7
-enum Style { ROCK, METAL };
+enum Style { ROCK, METAL, BILLIE_JEAN };
 static Style currentStyle = ROCK;
 
-//  Variabile LED RGB ─
+//  var LED RGB 
 static uint8_t r_target=0, g_target=0, b_target=0;
 static uint8_t r_cur=0,    g_cur=0,    b_cur=0;
 static uint32_t ledOffMs = 0;
@@ -72,7 +71,7 @@ static void updateLed() {
     r_cur = stepTo(r_cur, r_target, 8);
     g_cur = stepTo(g_cur, g_target, 8);
     b_cur = stepTo(b_cur, b_target, 8);
-    // Anod comun: invert (0=aprins, 255=stins)
+    // anod comun: invert (0=aprins, 255=stins)
     analogWrite(LED_R, 255 - r_cur);
     analogWrite(LED_G, 255 - g_cur);
     digitalWrite(LED_B, b_cur > 127 ? LOW : HIGH);
@@ -80,7 +79,6 @@ static void updateLed() {
 
 enum State { READY, DETECTING, COOLING };
 
-//  2. Adaugat pointer df in struct ─
 struct Bat {
     uint8_t               addr;
     const char*           nume;
@@ -94,7 +92,7 @@ struct Bat {
     uint32_t              coolingStart;
 };
 
-//  3. bat1 foloseste dfPlayer, bat2 foloseste dfPlayer2 
+//  bata1 foloseste dfPlayer, bata2 foloseste dfPlayer2 
 static Bat bat1 = { MPU_ADDR_STG, "STG", &dfPlayer,  0,0,0, READY,0,0,0,0,0 };
 static Bat bat2 = { MPU_ADDR_DR,  "DR",  &dfPlayer2, 0,0,0, READY,0,0,0,0,0 };
 static uint32_t hitCount = 0;
@@ -143,21 +141,24 @@ static void classify(Bat &b) {
     const char* toba;
     const char* simbol;
 
-    // Baza sunet depinde de stil si de care DFPlayer
-    uint8_t base = (currentStyle == ROCK) ? 1 : (b.df == &dfPlayer ? 4 : 5);
+    uint8_t base = (currentStyle == ROCK)  ? 1 :
+                (currentStyle == METAL) ? (b.df == &dfPlayer ? 4 : 5) :
+                /* BILLIE_JEAN */         8;
 
     if (b.peak_pos > abs(b.peak_neg) && b.peak_pos > AXIS_DY_ZONE) {
-        toba="DREAPTA"; simbol=" >>> "; sound=base+2;
+        toba="DREAPTA"; simbol=" >>> ";
+        sound = (currentStyle == BILLIE_JEAN) ? base+1 : base+2;
     } else if (abs(b.peak_neg) > b.peak_pos && abs(b.peak_neg) > AXIS_DY_ZONE) {
-        toba="STANGA";  simbol=" <<< "; sound=base+1;
+        toba="STANGA";  simbol=" <<< ";
+        sound = (currentStyle == BILLIE_JEAN) ? base+2 : base+1;
     } else {
         toba="MIJLOC";  simbol=" [*] "; sound=base;
-    }
+}
 
-    //  4. Fiecare bat reda pe propriul DFPlayer 
+    //  fiecare bata reda pe propriul DFPlayer 
     b.df->play(sound);
 
-    //  LED RGB: culoare per toba ─
+    //  LED RGB: culoare per toba
     // STANGA=rosu, MIJLOC=galben, DREAPTA=mov
     if (sound == base+1)      setLedColor(255, 0,   0);   // rosu
     else if (sound == base)   setLedColor(255, 200, 0);   // galben
@@ -255,7 +256,7 @@ void setup() {
     delay(1000);
     if (!dfPlayer.begin(dfSerial, false)) {
         Serial.println(F("DF1 ERR!"));
-        lcd.setCursor(0, 1);
+        lcd.setCursor(0, 1);   
         lcd.print(F("DF1 ERR!        "));
     } else {
         Serial.println(F("DF1 OK"));
@@ -324,7 +325,7 @@ void loop() {
             delay(50);
 
             if (!paused) {
-                // Prima apasare → PAUZA
+                // Prima apasare  PAUZA
                 paused = true;
                 dfPlayer.stop();
                 dfPlayer2.stop();
@@ -340,12 +341,14 @@ void loop() {
                 lcd.print(F("Apasa pt resume "));
 
             } else {
-                // A doua apasare → RESUME + recalibrare
+                // A doua apasare  RESUME + recalibrare
                 paused = false;
                 dfPlayer.stop();
 
                 lcd.setCursor(0, 0);
-                lcd.print(F("  Stil: ROCK    "));
+                if      (currentStyle == ROCK)        lcd.print(F("  Stil: ROCK    "));
+                else if (currentStyle == METAL)       lcd.print(F("  Stil: METAL   "));
+                else                                  lcd.print(F(" Billie Jean    "));
                 lcd.setCursor(0, 1);
                 lcd.print(F("Calibrare...    "));
 
@@ -358,18 +361,19 @@ void loop() {
         }
     }
 
-    // Buton stil: ROCK ↔ METAL
+    // Buton stil: ROCK  METAL
     if (digitalRead(BTN2_PIN) == HIGH) {
         delay(50);
         if (digitalRead(BTN2_PIN) == HIGH) {
             while (digitalRead(BTN2_PIN) == HIGH);
             delay(50);
-            currentStyle = (currentStyle == ROCK) ? METAL : ROCK;
+            currentStyle = (currentStyle == ROCK)  ? METAL :
+                        (currentStyle == METAL) ? BILLIE_JEAN : ROCK;
+
             lcd.setCursor(0, 0);
-            if (currentStyle == ROCK)
-                lcd.print(F("  Stil: ROCK    "));
-            else
-                lcd.print(F("  Stil: METAL   "));
+            if      (currentStyle == ROCK)        lcd.print(F("  Stil: ROCK    "));
+            else if (currentStyle == METAL)       lcd.print(F("  Stil: METAL   "));
+            else                                  lcd.print(F(" Billie Jean    "));
         }
     }
 
