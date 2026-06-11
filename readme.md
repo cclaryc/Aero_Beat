@@ -1,6 +1,11 @@
-# 🥁 Aero Beat — Tobe Aeriene cu ATmega328P
+# Aero Beat — Tobe Aeriene
 
 **Aero Beat** este un instrument muzical virtual care simulează o baterie reală folosind două bețe de tobă echipate cu senzori de mișcare. Fiecare bată conține un modul MPU-6050 montat pe vârf, care detectează direcția loviturii în aer. Sistemul identifică una dintre cele 3 tobe virtuale per bâtă (stânga, mijloc, dreapta) și redă în timp real sunetul corespunzător printr-un amplificator de chitară sau căști. Simultan, un LED RGB se aprinde, ecranul LCD afișează toba lovită, iar o aplicație mobilă Android evidențiază vizual toba sau un visualiser audio.
+
+
+## The first IDEA:
+
+![Concept art](proj.png)
 
 ## Descriere generală
 
@@ -116,6 +121,8 @@ Aplicația Kotlin se conectează la HC-05 prin Bluetooth SPP, primește mesajele
 
 ## Rezultate obținute
 
+![Aero Beat în acțiune](image.png)
+
 Proiectul funcționează. Lovești în aer cu două bețe și se aude ca și cum ai fi un toboșar — doar că nu ești, și nici nu ai fi fără acest sistem.
 
 - Ambele bâte detectează corect direcția loviturii în timp real
@@ -142,7 +149,7 @@ Proiectul funcționează. Lovești în aer cu două bețe și se aude ca și cum
 ├── senzor.jpeg
 ├── src/
 │   └── detector_tobe.cpp
-└── android/
+└── android/ (not yet uploaded, but very much working)
     ├── MainActivity.kt
     ├── EqualizerView.kt
     └── res/
